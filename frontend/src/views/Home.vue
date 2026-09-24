@@ -8,9 +8,17 @@
         </el-button>
       </div>
 
-      <div v-if="boardStore.loading" class="loading-state">
+      <div v-if="boardStore.boardsLoading" class="loading-state">
         <el-icon class="is-loading" :size="32"><Loading /></el-icon>
         <p>Loading boards...</p>
+      </div>
+
+      <div v-else-if="boardStore.boardsStatus === 'error'" class="error-state">
+        <el-result icon="error" :title="boardStore.boardsError || 'Failed to load boards'">
+          <template #extra>
+            <el-button type="primary" @click="loadBoards">Retry</el-button>
+          </template>
+        </el-result>
       </div>
 
       <div v-else-if="boardStore.boards.length === 0" class="empty-state">
@@ -69,8 +77,14 @@ const createRules = {
 }
 
 onMounted(() => {
-  boardStore.fetchBoards()
+  loadBoards()
 })
+
+function loadBoards() {
+  boardStore.fetchBoards().catch(() => {
+    // Error is surfaced through the shared boardsStatus view state.
+  })
+}
 
 function openBoard(board) {
   router.push(`/board/${board.id}`)
@@ -152,5 +166,9 @@ async function confirmDeleteBoard(board) {
 
 .empty-state {
   padding: 60px 0;
+}
+
+.error-state {
+  padding: 40px 0;
 }
 </style>

@@ -6,18 +6,54 @@
         <h2 v-if="boardStore.currentBoard">{{ boardStore.currentBoard.name }}</h2>
       </div>
       <div class="board-actions">
-        <el-button type="primary" :icon="Plus" @click="showAddColumn = true">
+        <el-button
+          v-if="!boardStore.boardLoading && !boardStore.boardFailed"
+          type="primary"
+          :icon="Plus"
+          @click="showAddColumn = true"
+        >
           Add Column
         </el-button>
       </div>
     </div>
 
-    <div v-if="boardStore.loading" class="loading-state">
+    <div v-if="boardStore.boardLoading" class="loading-state">
       <el-icon class="is-loading" :size="32"><Loading /></el-icon>
       <p>Loading board...</p>
     </div>
 
+    <div v-else-if="boardStore.boardFailed" class="error-state">
+      <el-result icon="error" :title="boardStore.boardError || 'Failed to load board'">
+        <template #extra>
+          <el-button @click="$router.push('/')">Back to boards</el-button>
+          <el-button type="primary" @click="reloadBoard">Retry</el-button>
+        </template>
+      </el-result>
+    </div>
+
+    <div v-else-if="boardStore.columns.length === 0" class="empty-state">
+      <el-empty description="No columns yet. Add your first column to get started!">
+        <el-button type="primary" :icon="Plus" @click="showAddColumn = true">Add Column</el-button>
+      </el-empty>
+    </div>
+
     <div v-else class="columns-container">
+      <el-alert
+        v-if="boardStore.partialFailure"
+        class="partial-failure-banner"
+        type="warning"
+        show-icon
+        :closable="false"
+        :title="`${boardStore.failedColumns.length} column(s) couldn't be loaded`"
+      >
+        <div class="partial-failure-actions">
+          <span>Cards in those columns are temporarily unavailable.</span>
+          <el-button size="small" type="warning" :loading="retrying" @click="retryFailedColumns">
+            Retry
+          </el-button>
+        </div>
+      </el-alert>
+
       <draggable
         v-model="boardStore.columns"
         item-key="id"
@@ -30,6 +66,7 @@
           <Column
             :column="column"
             :cards="boardStore.cards[column.id] || []"
+            :card-state="boardStore.cardStatuses[column.id]"
             :all-columns="boardStore.columns"
             @add-card="handleAddCard"
             @edit-card="openCardDetail"
@@ -37,6 +74,7 @@
             @move-card="handleMoveCard"
             @rename-column="handleRenameColumn"
             @delete-column="confirmDeleteColumn"
+            @retry-cards="handleRetryColumn"
           />
         </template>
       </draggable>
@@ -80,7 +118,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, ArrowLeft, Loading } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import { useBoardStore } from '../stores/board.js'
-import { columnApi } from '../api/index.js'
 import Column from '../components/Column.vue'
 import AddCardForm from '../components/AddCardForm.vue'
 import CardDetail from '../components/CardDetail.vue'
@@ -95,33 +132,42 @@ const showAddCard = ref(false)
 const addingToColumnId = ref(null)
 const showCardDetail = ref(false)
 const selectedCard = ref(null)
+const retrying = ref(false)
 
-onMounted(async () => {
-  const boardId = parseInt(route.params.id)
-  boardStore.currentBoard = { id: boardId, name: 'Loading...' }
-  try {
-    await boardStore.fetchColumns(boardId)
-    await boardStore.fetchAllCards(boardId)
-    // Get board name from boards list or set from URL
-    const boards = boardStore.boards
-    const found = boards.find(b => b.id === boardId)
-    if (found) {
-      boardStore.currentBoard = found
-    } else {
-      // Fetch boards to get the name
-      await boardStore.fetchBoards()
-      const b = boardStore.boards.find(b => b.id === boardId)
-      if (b) boardStore.currentBoard = b
-    }
-  } catch (err) {
-    ElMessage.error('Failed to load board')
-    router.push('/')
-  }
+onMounted(() => {
+  reloadBoard()
 })
 
 onUnmounted(() => {
   boardStore.clearBoard()
 })
+
+function reloadBoard() {
+  const boardId = parseInt(route.params.id)
+  // loadBoard derives every workspace state (loading / failure /
+  // partial failure / empty / ready); the template only renders it.
+  boardStore.loadBoard(boardId).catch(() => {
+    // Hard failure is shown inline via boardStore.boardFailed.
+  })
+}
+
+async function retryFailedColumns() {
+  retrying.value = true
+  try {
+    await boardStore.retryFailedColumns()
+    if (!boardStore.partialFailure) ElMessage.success('All columns loaded')
+  } catch (err) {
+    // Columns that still failed keep their inline retry state.
+  } finally {
+    retrying.value = false
+  }
+}
+
+function handleRetryColumn(columnId) {
+  boardStore.loadColumnCards(columnId, { keepPrevious: false, markLoading: true }).catch(() => {
+    // Error stays visible in the column's card-state.
+  })
+}
 
 async function handleAddColumn() {
   if (!newColumnName.value.trim()) return
@@ -167,10 +213,10 @@ async function confirmDeleteCard(card) {
   }
 }
 
-async function handleMoveCard(cardId, targetColumnId, position) {
+async function handleMoveCard(cardId, targetColumnId, position, options = {}) {
   try {
     await boardStore.moveCard(cardId, targetColumnId, position)
-    ElMessage.success('Card moved')
+    if (!options.silent) ElMessage.success('Card moved')
   } catch (err) {
     ElMessage.error('Failed to move card')
   }
@@ -203,20 +249,13 @@ async function confirmDeleteColumn(column) {
   }
 }
 
-async function onColumnDragEnd(evt) {
-  // Update column positions after drag
-  const columns = boardStore.columns
-  for (let i = 0; i < columns.length; i++) {
-    if (columns[i].position !== i) {
-      try {
-        await columnApi.update(columns[i].id, { position: i })
-        columns[i].position = i
-      } catch (err) {
-        // Refresh to get correct state
-        await boardStore.fetchColumns(boardStore.currentBoard.id)
-        break
-      }
-    }
+async function onColumnDragEnd() {
+  // Columns were already reordered optimistically by vuedraggable;
+  // the store persists positions and reconciles on failure.
+  try {
+    await boardStore.persistColumnOrder()
+  } catch (err) {
+    ElMessage.error('Failed to reorder columns')
   }
 }
 </script>
@@ -275,5 +314,25 @@ async function onColumnDragEnd(evt) {
 
 .loading-state p {
   margin-top: 12px;
+}
+
+.error-state,
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.partial-failure-banner {
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+.partial-failure-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 </style>

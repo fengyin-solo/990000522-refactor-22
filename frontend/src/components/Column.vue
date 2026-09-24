@@ -26,24 +26,43 @@
     </div>
 
     <div class="column-cards">
-      <draggable
-        :model-value="cards"
-        item-key="id"
-        group="cards"
-        ghost-class="card-ghost"
-        animation="200"
-        @end="onCardDragEnd"
-      >
-        <template #item="{ element: card }">
-          <TaskCard
-            :card="card"
-            :all-columns="allColumns"
-            @edit="$emit('edit-card', card)"
-            @delete="$emit('delete-card', card)"
-            @move="(targetColId) => $emit('move-card', card.id, targetColId, 0)"
-          />
-        </template>
-      </draggable>
+      <div v-if="cardStatus === 'loading'" class="card-state card-state-loading">
+        <el-icon class="is-loading" :size="18"><Loading /></el-icon>
+        <span>Loading cards...</span>
+      </div>
+
+      <div v-else-if="cardStatus === 'error'" class="card-state card-state-error">
+        <el-text type="danger" size="small">{{ cardError || 'Failed to load cards' }}</el-text>
+        <el-button size="small" type="danger" plain @click="$emit('retry-cards', column.id)">
+          Retry
+        </el-button>
+      </div>
+
+      <template v-else>
+        <draggable
+          :model-value="cards"
+          item-key="id"
+          group="cards"
+          ghost-class="card-ghost"
+          animation="200"
+          :data-column-id="column.id"
+          @end="onCardDragEnd"
+        >
+          <template #item="{ element: card }">
+            <TaskCard
+              :card="card"
+              :all-columns="allColumns"
+              @edit="$emit('edit-card', card)"
+              @delete="$emit('delete-card', card)"
+              @move="(targetColId) => $emit('move-card', card.id, targetColId, 0)"
+            />
+          </template>
+        </draggable>
+
+        <div v-if="cards.length === 0" class="card-state card-state-empty">
+          <el-text type="info" size="small">No cards yet</el-text>
+        </div>
+      </template>
     </div>
 
     <div class="column-footer">
@@ -55,19 +74,24 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
-import { MoreFilled, Plus } from '@element-plus/icons-vue'
+import { ref, computed, nextTick } from 'vue'
+import { MoreFilled, Plus, Loading } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import TaskCard from './TaskCard.vue'
-import { cardApi } from '../api/index.js'
 
 const props = defineProps({
   column: { type: Object, required: true },
   cards: { type: Array, default: () => [] },
+  // Shared per-column card state derived in the store:
+  // { status: 'loading' | 'success' | 'error', error }
+  cardState: { type: Object, default: null },
   allColumns: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['add-card', 'edit-card', 'delete-card', 'move-card', 'rename-column', 'delete-column'])
+const emit = defineEmits(['add-card', 'edit-card', 'delete-card', 'move-card', 'rename-column', 'delete-column', 'retry-cards'])
+
+const cardStatus = computed(() => props.cardState?.status || 'success')
+const cardError = computed(() => props.cardState?.error || null)
 
 const isEditing = ref(false)
 const editName = ref('')
@@ -96,26 +120,20 @@ function handleCommand(command) {
   }
 }
 
-async function onCardDragEnd(evt) {
+// The DOM already reflects the drag (vuedraggable is optimistic); emit
+// the move so the single store action applies and reconciles the same
+// state the user just saw. Sortable fires `end` once, on the source
+// column, for both same-column reorders and cross-column moves.
+function onCardDragEnd(evt) {
+  if (cardStatus.value !== 'success') return
+
   const cardId = evt.item?.__draggable_context?.element?.id
-  const toColumnId = props.column.id
-  
-  // Find source column
-  const fromContext = evt.from.__draggable_context
-  const toContext = evt.to.__draggable_context
-  
   if (!cardId) return
-  
-  const newIndex = evt.newIndex
-  
-  // If moved to a different column, update via API
-  if (evt.from !== evt.to) {
-    try {
-      await cardApi.move(cardId, toColumnId, newIndex)
-    } catch (err) {
-      // Refresh would be needed here, but the store handles it
-    }
-  }
+
+  const toColumnId = Number(evt.to?.dataset?.columnId)
+  if (!toColumnId) return
+
+  emit('move-card', cardId, toColumnId, evt.newIndex ?? 0, { silent: true })
 }
 </script>
 
@@ -165,6 +183,23 @@ async function onCardDragEnd(evt) {
   overflow-y: auto;
   padding: 4px 8px;
   min-height: 60px;
+}
+
+.card-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 8px;
+  text-align: center;
+}
+
+.card-state-loading {
+  color: #909399;
+}
+
+.card-state-empty {
+  padding: 12px 8px;
 }
 
 .column-cards::-webkit-scrollbar {
