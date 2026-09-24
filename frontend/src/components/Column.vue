@@ -26,24 +26,41 @@
     </div>
 
     <div class="column-cards">
-      <draggable
-        :model-value="cards"
-        item-key="id"
-        group="cards"
-        ghost-class="card-ghost"
-        animation="200"
-        @end="onCardDragEnd"
-      >
-        <template #item="{ element: card }">
-          <TaskCard
-            :card="card"
-            :all-columns="allColumns"
-            @edit="$emit('edit-card', card)"
-            @delete="$emit('delete-card', card)"
-            @move="(targetColId) => $emit('move-card', card.id, targetColId, 0)"
-          />
-        </template>
-      </draggable>
+      <div v-if="status === 'loading'" class="column-cards-state">
+        <el-icon class="is-loading" :size="20"><Loading /></el-icon>
+        <span>Loading cards...</span>
+      </div>
+
+      <div v-else-if="status === 'error'" class="column-cards-error">
+        <p>{{ error || 'Failed to load cards' }}</p>
+        <el-button size="small" type="primary" plain :icon="RefreshRight" @click="$emit('retry-cards', column.id)">
+          Retry
+        </el-button>
+      </div>
+
+      <template v-else>
+        <draggable
+          :model-value="cards"
+          item-key="id"
+          group="cards"
+          ghost-class="card-ghost"
+          animation="200"
+          @end="onCardDragEnd"
+        >
+          <template #item="{ element: card }">
+            <TaskCard
+              :card="card"
+              :all-columns="allColumns"
+              @edit="$emit('edit-card', card)"
+              @delete="$emit('delete-card', card)"
+              @move="(targetColId) => $emit('move-card', card.id, targetColId, 0)"
+            />
+          </template>
+        </draggable>
+        <div v-if="cards.length === 0" class="column-cards-empty">
+          No cards yet
+        </div>
+      </template>
     </div>
 
     <div class="column-footer">
@@ -56,7 +73,7 @@
 
 <script setup>
 import { ref, nextTick } from 'vue'
-import { MoreFilled, Plus } from '@element-plus/icons-vue'
+import { MoreFilled, Plus, Loading, RefreshRight } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import TaskCard from './TaskCard.vue'
 import { cardApi } from '../api/index.js'
@@ -64,10 +81,13 @@ import { cardApi } from '../api/index.js'
 const props = defineProps({
   column: { type: Object, required: true },
   cards: { type: Array, default: () => [] },
-  allColumns: { type: Array, default: () => [] }
+  allColumns: { type: Array, default: () => [] },
+  // loading | error | empty | ready — derived centrally in the board store
+  status: { type: String, default: 'loading' },
+  error: { type: String, default: '' }
 })
 
-const emit = defineEmits(['add-card', 'edit-card', 'delete-card', 'move-card', 'rename-column', 'delete-column'])
+const emit = defineEmits(['add-card', 'edit-card', 'delete-card', 'move-card', 'rename-column', 'delete-column', 'retry-cards'])
 
 const isEditing = ref(false)
 const editName = ref('')
@@ -165,6 +185,38 @@ async function onCardDragEnd(evt) {
   overflow-y: auto;
   padding: 4px 8px;
   min-height: 60px;
+}
+
+.column-cards-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+  color: #909399;
+  font-size: 12px;
+}
+
+.column-cards-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 8px;
+  text-align: center;
+}
+
+.column-cards-error p {
+  margin: 0;
+  font-size: 12px;
+  color: #f56c6c;
+}
+
+.column-cards-empty {
+  padding: 12px 4px 16px;
+  text-align: center;
+  font-size: 12px;
+  color: #c0c4cc;
 }
 
 .column-cards::-webkit-scrollbar {

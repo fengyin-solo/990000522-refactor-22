@@ -8,26 +8,28 @@
         </el-button>
       </div>
 
-      <div v-if="boardStore.loading" class="loading-state">
-        <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-        <p>Loading boards...</p>
-      </div>
-
-      <div v-else-if="boardStore.boards.length === 0" class="empty-state">
-        <el-empty description="No boards yet. Create your first board!">
+      <StateView
+        :status="boardStore.listView.status"
+        :error="boardStore.listView.error"
+        loading-text="Loading boards..."
+        error-title="Failed to load boards"
+        empty-text="No boards yet. Create your first board!"
+        @retry="boardStore.fetchBoards()"
+      >
+        <template #empty-extra>
           <el-button type="primary" @click="showCreateDialog = true">Create Board</el-button>
-        </el-empty>
-      </div>
+        </template>
 
-      <div v-else class="boards-grid">
-        <BoardCard
-          v-for="board in boardStore.boards"
-          :key="board.id"
-          :board="board"
-          @open="openBoard"
-          @delete="confirmDeleteBoard"
-        />
-      </div>
+        <div v-if="boardStore.listView.status === 'ready'" class="boards-grid">
+          <BoardCard
+            v-for="board in boardStore.listView.boards"
+            :key="board.id"
+            :board="board"
+            @open="openBoard"
+            @delete="confirmDeleteBoard"
+          />
+        </div>
+      </StateView>
     </div>
 
     <!-- Create Board Dialog -->
@@ -52,9 +54,10 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Loading } from '@element-plus/icons-vue'
+import { Plus } from '@element-plus/icons-vue'
 import { useBoardStore } from '../stores/board.js'
 import BoardCard from '../components/BoardCard.vue'
+import StateView from '../components/StateView.vue'
 
 const router = useRouter()
 const boardStore = useBoardStore()
@@ -69,7 +72,9 @@ const createRules = {
 }
 
 onMounted(() => {
-  boardStore.fetchBoards()
+  // Store keeps the listView status; ignore the rejection here since the shared
+  // state view renders the error and retry button.
+  boardStore.fetchBoards().catch(() => {})
 })
 
 function openBoard(board) {
@@ -138,19 +143,5 @@ async function confirmDeleteBoard(board) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 20px;
-}
-
-.loading-state {
-  text-align: center;
-  padding: 60px;
-  color: #909399;
-}
-
-.loading-state p {
-  margin-top: 12px;
-}
-
-.empty-state {
-  padding: 60px 0;
 }
 </style>

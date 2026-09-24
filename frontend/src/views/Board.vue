@@ -6,41 +6,58 @@
         <h2 v-if="boardStore.currentBoard">{{ boardStore.currentBoard.name }}</h2>
       </div>
       <div class="board-actions">
-        <el-button type="primary" :icon="Plus" @click="showAddColumn = true">
+        <el-button
+          v-if="boardStore.boardView.status === 'ready' || boardStore.boardView.status === 'empty'"
+          type="primary"
+          :icon="Plus"
+          @click="showAddColumn = true"
+        >
           Add Column
         </el-button>
       </div>
     </div>
 
-    <div v-if="boardStore.loading" class="loading-state">
-      <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-      <p>Loading board...</p>
-    </div>
+    <StateView
+      :status="boardStore.boardView.status"
+      :error="boardStore.boardView.error"
+      loading-text="Loading board..."
+      error-title="Failed to load board"
+      @retry="reloadBoard"
+    >
+      <template v-if="boardStore.boardView.status === 'empty'" #empty-extra>
+        <el-button type="primary" :icon="Plus" @click="showAddColumn = true">
+          Add Column
+        </el-button>
+      </template>
 
-    <div v-else class="columns-container">
-      <draggable
-        v-model="boardStore.columns"
-        item-key="id"
-        class="columns-wrapper"
-        ghost-class="column-ghost"
-        animation="200"
-        @end="onColumnDragEnd"
-      >
-        <template #item="{ element: column }">
-          <Column
-            :column="column"
-            :cards="boardStore.cards[column.id] || []"
-            :all-columns="boardStore.columns"
-            @add-card="handleAddCard"
-            @edit-card="openCardDetail"
-            @delete-card="confirmDeleteCard"
-            @move-card="handleMoveCard"
-            @rename-column="handleRenameColumn"
-            @delete-column="confirmDeleteColumn"
-          />
-        </template>
-      </draggable>
-    </div>
+      <div v-if="boardStore.boardView.status === 'ready'" class="columns-container">
+        <draggable
+          v-model="boardStore.columns"
+          item-key="id"
+          class="columns-wrapper"
+          ghost-class="column-ghost"
+          animation="200"
+          @end="onColumnDragEnd"
+        >
+          <template #item="{ element: column, index }">
+            <Column
+              :column="column"
+              :cards="boardStore.columnViews[index]?.cards || []"
+              :status="boardStore.columnViews[index]?.status || 'loading'"
+              :error="boardStore.columnViews[index]?.error || ''"
+              :all-columns="boardStore.columns"
+              @add-card="handleAddCard"
+              @edit-card="openCardDetail"
+              @delete-card="confirmDeleteCard"
+              @move-card="handleMoveCard"
+              @rename-column="handleRenameColumn"
+              @delete-column="confirmDeleteColumn"
+              @retry-cards="handleRetryCards"
+            />
+          </template>
+        </draggable>
+      </div>
+    </StateView>
 
     <!-- Add Column Dialog -->
     <el-dialog v-model="showAddColumn" title="Add Column" width="400px" :close-on-click-modal="false">
@@ -75,18 +92,18 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, ArrowLeft, Loading } from '@element-plus/icons-vue'
+import { Plus, ArrowLeft } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import { useBoardStore } from '../stores/board.js'
 import { columnApi } from '../api/index.js'
 import Column from '../components/Column.vue'
 import AddCardForm from '../components/AddCardForm.vue'
 import CardDetail from '../components/CardDetail.vue'
+import StateView from '../components/StateView.vue'
 
 const route = useRoute()
-const router = useRouter()
 const boardStore = useBoardStore()
 
 const showAddColumn = ref(false)
@@ -96,28 +113,20 @@ const addingToColumnId = ref(null)
 const showCardDetail = ref(false)
 const selectedCard = ref(null)
 
-onMounted(async () => {
-  const boardId = parseInt(route.params.id)
-  boardStore.currentBoard = { id: boardId, name: 'Loading...' }
-  try {
-    await boardStore.fetchColumns(boardId)
-    await boardStore.fetchAllCards(boardId)
-    // Get board name from boards list or set from URL
-    const boards = boardStore.boards
-    const found = boards.find(b => b.id === boardId)
-    if (found) {
-      boardStore.currentBoard = found
-    } else {
-      // Fetch boards to get the name
-      await boardStore.fetchBoards()
-      const b = boardStore.boards.find(b => b.id === boardId)
-      if (b) boardStore.currentBoard = b
-    }
-  } catch (err) {
-    ElMessage.error('Failed to load board')
-    router.push('/')
-  }
+onMounted(() => {
+  reloadBoard()
 })
+
+function reloadBoard() {
+  const boardId = parseInt(route.params.id)
+  // Failures stay in the shared boardView; the StateView shows the retry button
+  // instead of bouncing back to the board list.
+  boardStore.loadBoard(boardId).catch(() => {})
+}
+
+function handleRetryCards(columnId) {
+  boardStore.retryColumnCards(columnId).catch(() => {})
+}
 
 onUnmounted(() => {
   boardStore.clearBoard()
@@ -126,7 +135,7 @@ onUnmounted(() => {
 async function handleAddColumn() {
   if (!newColumnName.value.trim()) return
   try {
-    await boardStore.addColumn(boardStore.currentBoard.id, newColumnName.value.trim())
+    await boardStore.addColumn(parseInt(route.params.id), newColumnName.value.trim())
     newColumnName.value = ''
     showAddColumn.value = false
     ElMessage.success('Column added')
@@ -205,15 +214,15 @@ async function confirmDeleteColumn(column) {
 
 async function onColumnDragEnd(evt) {
   // Update column positions after drag
-  const columns = boardStore.columns
-  for (let i = 0; i < columns.length; i++) {
-    if (columns[i].position !== i) {
+  const currentColumns = boardStore.columns
+  for (let i = 0; i < currentColumns.length; i++) {
+    if (currentColumns[i].position !== i) {
       try {
-        await columnApi.update(columns[i].id, { position: i })
-        columns[i].position = i
+        await columnApi.update(currentColumns[i].id, { position: i })
+        currentColumns[i].position = i
       } catch (err) {
-        // Refresh to get correct state
-        await boardStore.fetchColumns(boardStore.currentBoard.id)
+        // Refresh order from the server without discarding loaded cards
+        await boardStore.refreshColumns(parseInt(route.params.id)).catch(() => {})
         break
       }
     }
@@ -265,15 +274,5 @@ async function onColumnDragEnd(evt) {
   opacity: 0.5;
   background: #e8f4ff;
   border-radius: 8px;
-}
-
-.loading-state {
-  text-align: center;
-  padding: 60px;
-  color: #909399;
-}
-
-.loading-state p {
-  margin-top: 12px;
 }
 </style>
